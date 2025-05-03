@@ -2,9 +2,17 @@ import pandas as pd
 import json
 import os
 
-# --- Configuration ---
-INPUT_CSV_FILE = "C:/Users/Equipo/Documents/bulk_load_yelo_calidda/data/test_data.csv"
-OUTPUT_DIR = "output"
+from dotenv import load_dotenv
+
+from utils import logger
+
+
+# --- Environment Variables ---
+load_dotenv()
+INPUT_CSV_FILE = os.getenv("INPUT_CSV_FILE")
+OUTPUT_DIR = os.getenv("OUTPUT_DIR")
+
+# --- Constants ---
 CHECKPOINT_FILE = os.path.join(OUTPUT_DIR, "intermediate_checkpoint.json")
 OUTPUT_FILES = {
     "both": os.path.join(OUTPUT_DIR, "users_phone_email.json"),
@@ -50,7 +58,7 @@ def format_phone(phone):
         return phone_str  # Already formatted? Return as is.
     except (ValueError, TypeError):
         # Handle cases where phone is not a valid number
-        print(
+        logger.info(
             f"  - Warning: Could not format non-numeric phone '{phone}'. Skipping format."
         )
         return str(phone)  # Return original string representation if conversion fails
@@ -115,12 +123,8 @@ def aggregate_user_data(group):
 
 
 # --- Main Processing ---
-
-print("Starting data processing...")
-
-# Create output directory if it doesn't exist
+logger.info("Starting data processing...")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-print(f"Output directory '{OUTPUT_DIR}' ensured.")
 
 
 # ---------------------------
@@ -129,14 +133,12 @@ print(f"Output directory '{OUTPUT_DIR}' ensured.")
 
 try:
     df = pd.read_csv(INPUT_CSV_FILE)
-    print(f"Loaded data from '{INPUT_CSV_FILE}'. Shape: {df.shape}")
-    print("\nSample of raw data:")
-    print(df.head().to_markdown(index=False))
+    logger.info(f"Shape: {df.shape}")
 except FileNotFoundError:
-    print(f"ERROR: Input file '{INPUT_CSV_FILE}' not found. Exiting.")
+    logger.info(f"ERROR: Input file '{INPUT_CSV_FILE}' not found. Exiting.")
     exit()
 except Exception as e:
-    print(f"ERROR: Failed to load CSV: {e}. Exiting.")
+    logger.info(f"ERROR: Failed to load CSV: {e}. Exiting.")
     exit()
 
 initial_row_count = len(df)
@@ -149,18 +151,26 @@ initial_unique_users = df["num_document"].nunique()
 # Remove unused columns
 columns_to_drop = ["num_interlocutor", "saldo_disponible", "fijo", "NSE"]
 df.drop(columns=columns_to_drop, inplace=True, errors="ignore")
-print(f"\nDropped columns: {columns_to_drop}")
+logger.info(f"\nDropped columns: {columns_to_drop}")
 
 # Remove NA values
 
 
 # Keep only unique "cuenta_contrato" values
+logger.info("\nFiltering based on 'cuenta_contrato'...")
+rows_before_cc_drop = len(df)
+df.drop_duplicates(subset=["cuenta_contrato"], keep="first", inplace=True)
+rows_after_cc_drop = len(df)
+logger.info(
+    f"Removed {rows_before_cc_drop - rows_after_cc_drop} rows with duplicate 'cuenta_contrato'."
+)
+# Recalculate unique users *after* this filtering step, before grouping
+unique_users_after_cc_drop = df["num_document"].nunique()
 
 
 # ---------------------------
 # --- 3. TRANSFORM ----------
 # ---------------------------
-
 
 # Adress Transformation
 # Fill NaN with empty strings before joining
@@ -175,19 +185,18 @@ df["full_address"] = df["full_address"].apply(lambda x: f"{x}, Peru" if x else "
 
 # Drop original address columns
 df.drop(columns=["direccion", "distrito"], inplace=True)
-print("\nCombined address columns into 'full_address' and added ', Peru'.")
+logger.info("\nCombined address columns into 'full_address' and added ', Peru'.")
 
 # Name Transformation
 df[["first_name", "last_name"]] = df["apellidos_nombres"].apply(
     lambda full_name: pd.Series(split_name(full_name))
 )
 df.drop(columns=["apellidos_nombres"], inplace=True)
-print("\nSplit 'apellidos_nombres' into 'first_name' and 'last_name'.")
+logger.info("\nSplit 'apellidos_nombres' into 'first_name' and 'last_name'.")
 
 # Phone Numbers transformation
-print("\nFormatting phone numbers...")
+logger.info("\nFormatting phone numbers...")
 df["celular"] = df["celular"].apply(format_phone)
-print("Phone number formatting applied ('+51 ' prefix).")
 
 
 # Reorder columns
@@ -203,50 +212,41 @@ intermediate_order = [
     "longitud",
 ]
 # Ensure all columns are included, even if not in the specific order list
+logger.info("\nReordering columns...")
 current_cols = [col for col in intermediate_order if col in df.columns]
 other_cols = [col for col in df.columns if col not in current_cols]
 df = df[current_cols + other_cols]
-print("\nReordered columns.")
 
-# 7. Drop rows with duplicate 'cuenta_contrato', keeping the first occurrence
-print("\nFiltering based on 'cuenta_contrato'...")
-rows_before_cc_drop = len(df)
-df.drop_duplicates(subset=["cuenta_contrato"], keep="first", inplace=True)
-rows_after_cc_drop = len(df)
-print(
-    f"Removed {rows_before_cc_drop - rows_after_cc_drop} rows with duplicate 'cuenta_contrato'."
-)
-# Recalculate unique users *after* this filtering step, before grouping
-unique_users_after_cc_drop = df["num_document"].nunique()
 
-print("\nSample of data before grouping:")
+logger.info("\nSample of data before grouping:")
 print(df.head().to_markdown(index=False))
 
 
 # 7. Intermediate Checkpoint
 try:
     df.to_json(CHECKPOINT_FILE, orient="records", indent=4)
-    print(f"\nSaved intermediate checkpoint to '{CHECKPOINT_FILE}'")
 except Exception as e:
-    print(f"Warning: Failed to save checkpoint file: {e}")
+    logger.warning(f"Warning: Failed to save checkpoint file: {e}")
 
 
-# 8. Group by User (num_document)
-print("\nGrouping data by 'num_document'...")
+# ---------------------------
+# --- 4. GROUP --------------
+# ---------------------------
+
+logger.info("\nGrouping data by 'num_document'...")
 
 # Apply grouping and aggregation
 grouped_data = df.groupby("num_document").apply(aggregate_user_data).reset_index()
-
 unique_user_count = len(grouped_data)
 rows_dropped_count = initial_row_count - unique_user_count
-
-print(f"Grouping complete. {len(grouped_data)} unique users found.")
-print("\nSample of grouped data:")
-print(grouped_data.head().to_markdown(index=False))
+logger.info(f"Grouping complete. {len(grouped_data)} unique users found.")
 
 
-# 9. Transform to Target Schema (`CleanUserData` structure)
-print("\nTransforming grouped data to target JSON structure...")
+# ---------------------------
+# --- 5.Target Schema -------
+# ---------------------------
+
+logger.info("\nTransforming grouped data to target JSON structure...")
 transformed_users = []
 for _, user in grouped_data.iterrows():
     # Format addresses according to CleanAddress model structure
@@ -258,33 +258,33 @@ for _, user in grouped_data.iterrows():
                 "latitude": addr["latitude"],
                 "longitude": addr["longitude"],
                 "house_no": str(addr["house_no"]),
-                "id": None,  # Placeholder
-                "upload_status": None,  # Placeholder
+                "id": None,
+                "upload_status": None,
             }
         )
 
     user_data = {
-        "password": str(user["num_document"]),  # Ensure password is a string
+        "password": str(user["num_document"]),
         "first_name": user["first_name"],
         "last_name": user["last_name"],
         "email": user["email"],
         "phone_no": user["phone_no"],
         "addresses": clean_addresses,
-        "custom_fields": None,  # No source data for custom fields
-        "upload_status": None,  # Placeholder
-        "customer_id": None,  # Placeholder
-        "error_message": None,  # Placeholder
+        "custom_fields": None,  # TODO: No source data for custom fields
+        "upload_status": None,
+        "customer_id": None,
+        "error_message": None,
     }
     transformed_users.append(user_data)
 
-print(f"Transformation complete. {len(transformed_users)} user records created.")
-if transformed_users:
-    print("\nSample of first transformed user:")
-    print(json.dumps(transformed_users[0], indent=2))
+logger.info(f"Transformation complete. {len(transformed_users)} user records created.")
 
 
-# 10. Segment Data
-print("\nSegmenting users based on phone/email availability...")
+# ---------------------------
+# --- 6. SEGMENT ------------
+# ---------------------------
+
+logger.info("\nSegmenting users based on phone/email availability...")
 segmented_data = {
     "both": [],
     "phone_only": [],
@@ -305,30 +305,31 @@ for user in transformed_users:
     else:
         segmented_data["neither"].append(user)
 
-print("Segmentation complete:")
+logger.info("Segmentation complete:")
 for key, users in segmented_data.items():
     print(f" - {key.replace('_', ' ').title()}: {len(users)} users")
 
 
-# 11. Final Report and Output Files
-print("\n--- Processing Summary ---")
+# ---------------------------
+# --- 7. OUTPUT -------------
+# ---------------------------
 
-final_unique_users = unique_user_count  # Already calculated after grouping
+print("\n--- Processing Summary ---")
 
 print(f"Initial unique users (num_document): {initial_unique_users}")
 print(f"Unique users after 'cuenta_contrato' filter: {unique_users_after_cc_drop}")
-print(f"Final unique users processed (after grouping): {final_unique_users}")
+print(f"Final unique users processed (after grouping): {unique_user_count}")
 
-if final_unique_users < initial_unique_users:
-    print(
-        f"-> Note: {initial_unique_users - final_unique_users} unique users were dropped, potentially due to 'cuenta_contrato' filtering removing all their records."
+if unique_user_count < initial_unique_users:
+    logger.warning(
+        f"-> Note: {initial_unique_users - unique_user_count} unique users were dropped, potentially due to 'cuenta_contrato' filtering removing all their records."
     )
 elif unique_users_after_cc_drop < initial_unique_users:
-    print(
+    logger.warning(
         "-> Note: Some users might have lost records due to 'cuenta_contrato' filtering, but all initial unique users are still present."
     )
 else:
-    print("-> All initial unique users remain after processing.")
+    logger.info("-> All initial unique users remain after processing.")
 
 print("\nUser Segmentation Results:")
 total_segmented = 0
@@ -338,13 +339,13 @@ for key, users in segmented_data.items():
     total_segmented += count
 
 if total_segmented != unique_user_count:
-    print(
+    logger.warning(
         f"Warning: Mismatch between grouped users ({unique_user_count}) and segmented users ({total_segmented}). Check segmentation logic."
     )
 else:
-    print(f"Total users segmented: {total_segmented}")
+    logger.info(f"Total users segmented: {total_segmented}")
 
-print("\nSaving segmented data to output files...")
+logger.info("\nSaving segmented data to output files...")
 for key, users in segmented_data.items():
     output_filename = OUTPUT_FILES[key]
     num_users = len(users)
@@ -356,9 +357,8 @@ for key, users in segmented_data.items():
     print(f" - Saving {num_users} users for '{key}' to '{output_filename}'")
     try:
         with open(output_filename, "w") as f:
-            # Dump the entire list of users for this category into one file
             json.dump(users, f, indent=4)
     except Exception as e:
         print(f"ERROR: Failed to save file '{output_filename}': {e}")
 
-print("\nProcessing finished.")
+logger.info("\nProcessing finished.")
