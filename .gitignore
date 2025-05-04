@@ -14,3 +14,5 @@ wheels/
 data/
 output/
 output_test/
+clean_data/
+raw_data/
