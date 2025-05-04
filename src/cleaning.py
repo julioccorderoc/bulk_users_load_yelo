@@ -1,6 +1,7 @@
 import pandas as pd
 import json
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -9,16 +10,23 @@ from utils import logger
 
 # --- Environment Variables ---
 load_dotenv()
-INPUT_CSV_FILE = os.getenv("INPUT_CSV_FILE")
-OUTPUT_DIR = os.getenv("OUTPUT_DIR")
+RAW_DATA_FILE_NAME = os.getenv("RAW_DATA_FILE_NAME")
+RAW_DATA_DIR = os.getenv("RAW_DATA_DIR")
+CLEAN_DATA_DIR = os.getenv("CLEAN_DATA_DIR")
+
 
 # --- Constants ---
-CHECKPOINT_FILE = os.path.join(OUTPUT_DIR, "intermediate_checkpoint.json")
+current_dir = Path(".")
+parent_dir = current_dir.parent
+target_dir = parent_dir / RAW_DATA_DIR
+FILE_DIR = target_dir / RAW_DATA_FILE_NAME
+
+CHECKPOINT_FILE = os.path.join(CLEAN_DATA_DIR, "intermediate_checkpoint.json")
 OUTPUT_FILES = {
-    "both": os.path.join(OUTPUT_DIR, "users_phone_email.json"),
-    "phone_only": os.path.join(OUTPUT_DIR, "users_only_phone.json"),
-    "email_only": os.path.join(OUTPUT_DIR, "users_only_email.json"),
-    "neither": os.path.join(OUTPUT_DIR, "users_neither.json"),
+    "both": os.path.join(CLEAN_DATA_DIR, "users_phone_email.json"),
+    "phone_only": os.path.join(CLEAN_DATA_DIR, "users_only_phone.json"),
+    "email_only": os.path.join(CLEAN_DATA_DIR, "users_only_email.json"),
+    "neither": os.path.join(CLEAN_DATA_DIR, "users_neither.json"),
 }
 initial_row_count: int = 0
 initial_unique_users: int = 0
@@ -124,7 +132,7 @@ def aggregate_user_data(group):
 
 # --- Main Processing ---
 logger.info("Starting data processing...")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(CLEAN_DATA_DIR, exist_ok=True)
 
 
 # ---------------------------
@@ -132,10 +140,10 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # ---------------------------
 
 try:
-    df = pd.read_csv(INPUT_CSV_FILE)
+    df = pd.read_csv(FILE_DIR)
     logger.info(f"Shape: {df.shape}")
 except FileNotFoundError:
-    logger.info(f"ERROR: Input file '{INPUT_CSV_FILE}' not found. Exiting.")
+    logger.info(f"ERROR: Input file '{RAW_DATA_FILE_NAME}' not found. Exiting.")
     exit()
 except Exception as e:
     logger.info(f"ERROR: Failed to load CSV: {e}. Exiting.")

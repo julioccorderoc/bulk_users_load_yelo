@@ -4,10 +4,10 @@ import os
 # from pydantic import BaseModel
 from dotenv import load_dotenv
 
-from api_client import YeloApiClient
-from utils import logger
-from custom_exceptions import ApiHttpError, ApiClientError
-from models import (
+from src.api_client import ApiClient
+from src.utils import logger
+from src.custom_exceptions import ApiHttpError, ApiClientError
+from src.models import (
     CleanUserData,
     ResponsePostUserYelo,
     PostUserYelo,
@@ -24,7 +24,7 @@ POST_ADDRESS_ENDPOINT = os.getenv("POST_ADDRESS_ENDPOINT")
 POST_CUSTOM_FIELD_ENDPOINT = os.getenv("POST_CUSTOM_FIELD_ENDPOINT")
 
 
-async def upload_single_user(user_data: CleanUserData, client: YeloApiClient):
+async def upload_single_user(user_data: CleanUserData, client: ApiClient):
     """
     Attempts to upload one user with their addresses and custom fields using the provided API client.
     Updates the status fields on the user_data object directly.
@@ -42,14 +42,18 @@ async def upload_single_user(user_data: CleanUserData, client: YeloApiClient):
         # --- 1. Create User ---
         user_payload = PostUserYelo(
             api_key=YELO_API_KEY,
-            **user_data,
+            first_name=user_data.first_name,
+            last_name=user_data.last_name,
+            email=user_data.email,
+            phone_no=user_data.phone_no,
+            password=user_data.password,
         )
 
         created_user_response = await client.post(
-            endpoint=POST_ADDRESS_ENDPOINT,
+            endpoint=POST_USER_ENDPOINT,
             payload=user_payload,
             expected_status=200,
-            response_model=ResponsePostUserYelo,  # Optional: validates response structure
+            response_model=ResponsePostUserYelo,
         )
         user_data.customer_id = created_user_response.data.customer_id
 
@@ -70,10 +74,15 @@ async def upload_single_user(user_data: CleanUserData, client: YeloApiClient):
                 try:
                     address_payload = PostUserAddressYelo(
                         api_key=YELO_API_KEY,
-                        name=(user_data.first_name + " " + user_data.last_name),
+                        name=user_data.first_name,
                         loc_type=0,
-                        **user_data,
-                        **address,
+                        customer_id=user_data.customer_id,
+                        email=user_data.email,
+                        phone_no=user_data.phone_no,
+                        address=address.address,
+                        house_no=address.house_no,
+                        latitude=address.latitude,
+                        longitude=address.longitude,
                     )
                     # This is to handle multiple locations
                     if index <= 2:
@@ -96,9 +105,7 @@ async def upload_single_user(user_data: CleanUserData, client: YeloApiClient):
                         f"Failed to create address for user {user_log_id}. Data: {address.model_dump_json()}. Error: {e}"
                     )
                     address.upload_status = "failed"
-                    user_failed = (
-                        True  # Mark overall user upload as potentially partial/failed
-                    )
+                    user_failed = True
                 except Exception as e:  # Catch unexpected errors
                     logger.exception(
                         f"Unexpected error creating address for user {user_log_id}. Data: {address.model_dump_json()}. Error: {e}"
@@ -182,7 +189,7 @@ async def run_bulk_upload(
     failed_count = 0
     partial_count = 0
 
-    async with YeloApiClient(base_url=base_url) as client:
+    async with ApiClient(base_url=base_url) as client:
         # Create a list of tasks to run concurrently
         tasks = []
         for user_data in users_data:

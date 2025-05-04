@@ -8,25 +8,25 @@ from pydantic import (
 )
 from dotenv import load_dotenv
 
-from custom_exceptions import (
+from src.custom_exceptions import (
     ApiClientError,
     ApiTimeoutError,
     ApiConnectionError,
     ApiHttpError,
     ApiResponseValidationError,
 )
-from utils import yelo_headers, logger
+from src.utils import yelo_headers, logger
 
 
 # --- Environment Variables ---
 load_dotenv()
 YELO_API_BASE_URL = os.getenv("YELO_API_BASE_URL")
-DEFAULT_TIMEOUT = os.getenv("DEFAULT_TIMEOUT")
 YELO_API_TOKEN = os.getenv("YELO_API_TOKEN")
+DEFAULT_TIMEOUT = 15.0
 
 
 # --- API Client Class ---
-class YeloApiClient:
+class ApiClient:
     """
     A base client for interacting with the Yelo REST API asynchronously.
 
@@ -38,7 +38,7 @@ class YeloApiClient:
         base_url: str = YELO_API_BASE_URL,
         request_headers: dict[str, str] = yelo_headers,
         auth_token: str | None = None,  # Pass token during init or configure globally
-        timeout: int = DEFAULT_TIMEOUT,
+        timeout: float = DEFAULT_TIMEOUT,
     ):
         """
         Initializes the asynchronous API client.
@@ -69,12 +69,12 @@ class YeloApiClient:
                 "response": [self._log_response],
             },
         )
-        logger.info(f"YeloApiClient initialized for base URL: {self.base_url}")
+        logger.info(f"ApiClient initialized for base URL: {self.base_url}")
 
     async def close(self):
         """Gracefully close the underlying httpx client and connections."""
         await self._client.aclose()
-        logger.info("YeloApiClient connection closed.")
+        logger.info("ApiClient connection closed.")
 
     # --- Logging Hooks ---
     async def _log_request(self, request: httpx.Request):
@@ -344,7 +344,7 @@ class YeloApiClient:
 
     # --- Context Manager Support ---
     async def __aenter__(self):
-        # Allows using 'async with YeloApiClient(...) as client:'
+        # Allows using 'async with ApiClient(...) as client:'
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
