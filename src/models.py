@@ -79,6 +79,7 @@ class CleanAddress(BaseModel):
     loc_type: int
     id: int | None = None
     upload_status: str | None = None
+    error_message: str | None = None
 
 
 class CleanCustomField(BaseModel):
