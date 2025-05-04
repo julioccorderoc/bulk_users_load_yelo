@@ -75,7 +75,7 @@ async def upload_single_user(user_data: CleanUserData, client: ApiClient):
                     address_payload = PostUserAddressYelo(
                         api_key=YELO_API_KEY,
                         name=user_data.first_name,
-                        loc_type=0,
+                        loc_type=address.loc_type,
                         customer_id=user_data.customer_id,
                         email=user_data.email,
                         phone_no=user_data.phone_no,
@@ -84,11 +84,11 @@ async def upload_single_user(user_data: CleanUserData, client: ApiClient):
                         latitude=address.latitude,
                         longitude=address.longitude,
                     )
-                    # This is to handle multiple locations
-                    if index <= 2:
-                        address_payload.loc_type = index
-                    else:
-                        address_payload.loc_type = 2
+                    # # This is to handle multiple locations
+                    # if index <= 2:
+                    #     address_payload.loc_type = index
+                    # else:
+                    #     address_payload.loc_type = 2
 
                     created_address_response = await client.post(
                         endpoint=POST_ADDRESS_ENDPOINT,
