@@ -6,7 +6,11 @@ from dotenv import load_dotenv
 
 from src.api_client import ApiClient
 from src.utils import logger
-from src.custom_exceptions import ApiHttpError, ApiClientError
+from src.custom_exceptions import (
+    ApiHttpError,
+    ApiClientError,
+    ApiResponseValidationError,
+)
 from src.models import (
     CleanUserData,
     ResponsePostUserYelo,
@@ -16,32 +20,32 @@ from src.models import (
 )
 
 
+# --- Environment Variables ---
 load_dotenv()
 YELO_API_BASE_URL = os.getenv("YELO_API_BASE_URL")
-YELO_API_KEY = os.getenv("YELO_API_KEY")
 POST_USER_ENDPOINT = os.getenv("POST_USER_ENDPOINT")
 POST_ADDRESS_ENDPOINT = os.getenv("POST_ADDRESS_ENDPOINT")
 POST_CUSTOM_FIELD_ENDPOINT = os.getenv("POST_CUSTOM_FIELD_ENDPOINT")
 
 
-async def upload_single_user(user_data: CleanUserData, client: ApiClient):
+async def _create_yelo_user(user_data: CleanUserData, client: ApiClient) -> str | None:
     """
-    Attempts to upload one user with their addresses and custom fields using the provided API client.
-    Updates the status fields on the user_data object directly.
+    Attempts to create a single user.
+
+    Args:
+        user_data: The data for the user to create.
+        client: ApiClient instance.
+
+    Returns:
+        The customer_id (str) if creation is successful, None otherwise.
     """
+
+    logger.debug(f"Attempting to create user: {user_data.email}.")
     user_payload: PostUserYelo
     created_user_response: ResponsePostUserYelo
-    address_payload: PostUserAddressYelo
-    created_address_response: ResponsePostAddressYelo
-    user_log_id: str = user_data.password + " - " + user_data.email
-
-    logger.info(f"Processing user: {user_log_id}")
-    user_data.upload_status = "processing"
 
     try:
-        # --- 1. Create User ---
         user_payload = PostUserYelo(
-            api_key=YELO_API_KEY,
             first_name=user_data.first_name,
             last_name=user_data.last_name,
             email=user_data.email,
@@ -55,127 +59,265 @@ async def upload_single_user(user_data: CleanUserData, client: ApiClient):
             expected_status=200,
             response_model=ResponsePostUserYelo,
         )
-        user_data.customer_id = created_user_response.data.customer_id
 
-        logger.info(f"User {user_log_id} created. Yelo ID: {user_data.customer_id}")
-
-        # --- If user creation succeeds, proceed with addresses/fields ---
-        user_failed: bool = False  # Flag to track if any sub-step fails
-
-        # --- 2. Create Addresses ---
-        if user_data.addresses:
-            logger.info(
-                f"Uploading {len(user_data.addresses)} addresses for user {user_log_id}..."
+        # Validate if response structure is as expected even with 200 OK
+        if (
+            not created_user_response
+            or not created_user_response.data
+            or not created_user_response.data.customer_id
+        ):
+            logger.error(
+                f"User creation API call succeeded (200 OK) but response format is invalid for {user_data.email}. Response: {created_user_response}"
             )
-            # You *could* run these concurrently too with another asyncio.gather,
-            # but let's keep it sequential per user for simplicity first.
-            # Be mindful of potential API rate limits if running address uploads concurrently.
-            for index, address in enumerate(user_data.addresses):
-                try:
-                    address_payload = PostUserAddressYelo(
-                        api_key=YELO_API_KEY,
-                        name=user_data.first_name,
-                        loc_type=address.loc_type,
-                        customer_id=user_data.customer_id,
-                        email=user_data.email,
-                        phone_no=user_data.phone_no,
-                        address=address.address,
-                        house_no=address.house_no,
-                        latitude=address.latitude,
-                        longitude=address.longitude,
-                    )
-                    # # This is to handle multiple locations
-                    # if index <= 2:
-                    #     address_payload.loc_type = index
-                    # else:
-                    #     address_payload.loc_type = 2
+            raise ApiResponseValidationError(
+                "User creation response invalid format.",
+                status_code=200,
+                response_body=created_user_response,
+            )
 
-                    created_address_response = await client.post(
-                        endpoint=POST_ADDRESS_ENDPOINT,
-                        payload=address_payload,
-                        expected_status=200,
-                        response_model=ResponsePostAddressYelo,
-                    )
-                    address.id = created_address_response.data.id
-                    address.upload_status = "success"
-                    logger.debug(f"Address created for user {user_log_id}")
+        customer_id = created_user_response.data.customer_id
+        logger.info(
+            f"Successfully created user {user_data.email}. Yelo ID: {customer_id}"
+        )
+        return customer_id
 
-                except (ApiHttpError, ApiClientError) as e:
-                    logger.error(
-                        f"Failed to create address for user {user_log_id}. Data: {address.model_dump_json()}. Error: {e}"
-                    )
-                    address.upload_status = "failed"
-                    user_failed = True
-                except Exception as e:  # Catch unexpected errors
-                    logger.exception(
-                        f"Unexpected error creating address for user {user_log_id}. Data: {address.model_dump_json()}. Error: {e}"
-                    )
-                    address.upload_status = "failed"
-                    user_failed = True
+    except (ApiHttpError, ApiClientError, ApiResponseValidationError) as e:
+        logger.error(f"Failed to create user {user_data.email}. Error: {e}.")
+        user_data.error_message = f"User creation failed: {e}."
+        return None
+    except Exception as e:
+        logger.exception(
+            f"Unexpected error during user creation for {user_data.email}. Error: {e}."
+        )
+        user_data.error_message = f"Unexpected user creation error: {e}"
+        return None
 
-        # # --- 3. Create Custom Fields ---
-        # if user_data.custom_fields:
-        #     logger.info(
-        #         f"Uploading {len(user_data.custom_fields)} custom fields for user {user_data.yelo_user_id}..."
-        #     )
-        #     # Similar loop and error handling as addresses
-        #     for field in user_data.custom_fields:
-        #         try:
-        #             field_payload = {
-        #                 "key": field.field_key,
-        #                 "value": field.field_value,
-        #                 # ...
-        #             }
-        #             await client.post(
-        #                 endpoint=f"users/{user_data.yelo_user_id}/custom_fields",  # Example endpoint
-        #                 payload=field_payload,
-        #                 expected_status=201,
-        #             )
-        #             field.status = "success"
-        #             logger.debug(
-        #                 f"Custom field '{field.field_key}' created for user {user_data.yelo_user_id}"
-        #             )
-        #         except (ApiHttpError, ApiClientError) as e:
-        #             logger.error(
-        #                 f"Failed to create custom field '{field.field_key}' for user {user_data.yelo_user_id}. Error: {e}"
-        #             )
-        #             field.status = "failed"
-        #             user_failed = True
-        #         except Exception as e:
-        #             logger.exception(
-        #                 f"Unexpected error creating custom field '{field.field_key}' for user {user_data.yelo_user_id}. Error: {e}"
-        #             )
-        #             field.status = "failed"
-        #             user_failed = True
 
-        # --- Finalize User Status ---
-        if user_failed:
-            # Check if *all* addresses/fields failed along with user? Or just some?
-            # You might want more granular statuses like "partial_success"
-            user_data.upload_status = (
-                "partial"
-                if any(a.upload_status == "success" for a in user_data.addresses)
-                # or any(f.upload_status == "success" for f in user_data.custom_fields)
-                else "failed"
+async def _create_yelo_addresses(
+    user_data: CleanUserData, customer_id: str, client: ApiClient
+) -> bool:
+    """
+    Attempts to create addresses for a given user ID.
+    Updates status on individual address objects within user_data.
+
+    Args:
+        user_data: The user data object containing the list of addresses.
+        customer_id: The customer ID obtained after user creation.
+        client: The initialized ApiClient instance.
+
+    Returns:
+        True if all address creation attempts were successful (or if no addresses),
+        False if any address creation attempt failed.
+    """
+    if not user_data.addresses:
+        logger.debug(f"No addresses to upload for user {user_data.email}.")
+        return True
+
+    logger.info(
+        f"Uploading {len(user_data.addresses)} addresses for user {user_data.email}."
+    )
+    address_payload: PostUserAddressYelo
+    created_address_response: ResponsePostAddressYelo
+    any_address_failed: bool = False
+
+    for index, address_data in enumerate(user_data.addresses):
+        try:
+            if address_data.id is not None:
+                logger.debug(
+                    f"Address {index + 1}/{len(user_data.addresses)} already created for user {user_data.email}."
+                )
+                continue
+
+            address_data.upload_status = "processing"
+            full_name: str = f"{user_data.first_name} {user_data.last_name}"
+            address_payload = PostUserAddressYelo(
+                name=full_name,
+                customer_id=customer_id,
+                email=user_data.email,
+                phone_no=user_data.phone_no,
+                loc_type=address_data.loc_type,
+                address=address_data.address,
+                house_no=address_data.house_no,
+                latitude=address_data.latitude,
+                longitude=address_data.longitude,
+            )
+
+            created_address_response = await client.post(
+                endpoint=POST_ADDRESS_ENDPOINT,
+                payload=address_payload,
+                expected_status=200,
+                response_model=ResponsePostAddressYelo,
+            )
+
+            if (
+                not created_address_response
+                or not created_address_response.data
+                or not created_address_response.data.id
+            ):
+                logger.error(
+                    f"Address creation API call succeeded (200 OK) but response format is invalid for user {customer_id}, address index {index}. Response: {created_address_response}"
+                )
+                raise ApiResponseValidationError(
+                    "Address creation response invalid format.",
+                    status_code=200,
+                    response_body=created_address_response,
+                )
+
+            address_data.id = created_address_response.data.id
+            address_data.upload_status = "success"
+            logger.debug(
+                f"Address {index + 1}/{len(user_data.addresses)} created successfully for user {customer_id}. Yelo Address ID: {address_data.id}."
+            )
+
+        except (ApiHttpError, ApiClientError, ApiResponseValidationError) as e:
+            logger.error(
+                f"Failed to create address index {index} for user {customer_id}. Data: {address_data.model_dump_json(exclude={'upload_status', 'id'})}. Error: {e}."
+            )
+            address_data.upload_status = "failed"
+            # Store error specific to this address if needed
+            address_data.error_message = str(e)
+            any_address_failed = True
+        except Exception as e:
+            logger.exception(
+                f"Unexpected error creating address index {index} for user {customer_id}. Data: {address_data.model_dump_json(exclude={'upload_status', 'id'})}. Error: {e}."
+            )
+            address_data.upload_status = "failed"
+            address_data.error_message = f"Unexpected error: {e}."
+            any_address_failed = True
+
+    if any_address_failed:
+        logger.warning(
+            f"One or more addresses failed to upload for user {customer_id}."
+        )
+        return False
+    else:
+        logger.info(
+            f"All {len(user_data.addresses)} addresses uploaded successfully for user {customer_id}."
+        )
+        return True
+
+
+async def _create_yelo_custom_fields(
+    user_data: CleanUserData, customer_id: str, client: ApiClient
+) -> bool:
+    """
+    Placeholder for creating custom fields.
+
+    Args:
+        user_data: User data containing custom fields.
+        customer_id: The Yelo customer ID.
+        client: The ApiClient instance.
+
+    Returns:
+        True (currently always true as it's not implemented).
+    """
+    # if not user_data.custom_fields:
+    #     logger.debug(f"No custom fields to upload for user {customer_id}.")
+    #     return True
+    #
+    # logger.info(f"Uploading {len(user_data.custom_fields)} custom fields for user {customer_id}...")
+    # any_field_failed = False
+    #
+    # # --- Loop through custom fields ---
+    # # for field_data in user_data.custom_fields:
+    # #    try:
+    # #        # Reset status
+    # #        field_data.upload_status = "processing"
+    # #        # Create payload (e.g., PostCustomFieldYelo)
+    # #        field_payload = ...
+    # #        # Make API call
+    # #        await client.post(
+    # #             endpoint=POST_CUSTOM_FIELD_ENDPOINT, # Or specific endpoint like f"users/{customer_id}/custom_fields"
+    # #             payload=field_payload,
+    # #             expected_status=201 # Or 200
+    # #             # response_model=ResponseCustomFieldYelo # If applicable
+    # #        )
+    # #        # Update field status/id
+    # #        field_data.upload_status = "success"
+    # #        # field_data.id = response.data.id # If applicable
+    # #        logger.debug(f"Custom field '{field_data.field_key}' created for user {customer_id}")
+    # #    except (ApiHttpError, ApiClientError, ApiResponseValidationError) as e:
+    # #        logger.error(f"Failed to create custom field '{field_data.field_key}' for user {customer_id}. Error: {e}")
+    # #        field_data.upload_status = "failed"
+    # #        any_field_failed = True
+    # #    except Exception as e:
+    # #        logger.exception(f"Unexpected error creating custom field '{field_data.field_key}' for user {customer_id}. Error: {e}")
+    # #        field_data.upload_status = "failed"
+    # #        any_field_failed = True
+    #
+    # if any_field_failed:
+    #     logger.warning(f"One or more custom fields failed to upload for user {customer_id}.")
+    #     return False
+    # else:
+    #     # logger.info(f"All {len(user_data.custom_fields)} custom fields uploaded successfully for user {customer_id}.")
+    #     return True # Return True if section is commented out
+
+    # Remove this line when implementing custom fields
+    logger.debug(
+        f"Custom field upload skipped for user {customer_id} (not implemented)."
+    )
+    return True
+
+
+async def upload_single_user(user_data: CleanUserData, client: ApiClient):
+    """
+    Orchestrates the upload of one user with their addresses and custom fields.
+    Updates the overall status field on the user_data object.
+    """
+
+    logger.info(f"----- Processing User: {user_data.email} -----")
+    user_data.upload_status = "processing"
+
+    # --- Step 1: Create User ---
+    customer_id = await _create_yelo_user(user_data, client)
+
+    if customer_id is None:
+        user_data.upload_status = "failed"
+        logger.error(
+            f"User creation failed for {user_data.email}. Skipping addresses/fields."
+        )
+        return
+
+    user_data.customer_id = customer_id
+
+    # --- Step 2: Create Addresses ---
+    all_addresses_succeeded = await _create_yelo_addresses(
+        user_data, customer_id, client
+    )
+
+    # --- Step 3: Create Custom Fields ---
+    all_fields_succeeded = await _create_yelo_custom_fields(
+        user_data, customer_id, client
+    )
+
+    # --- Step 4: Determine Final User Status ---
+    if all_addresses_succeeded and all_fields_succeeded:
+        user_data.upload_status = "success"
+        logger.info(
+            f"Successfully processed user {user_data.email}. All sub-tasks successful."
+        )
+    else:
+        # Check if *anything* succeeded after user creation (at least one address or field)
+        any_sub_task_success = any(
+            a.upload_status == "success" for a in user_data.addresses
+        )
+        # or any(f.upload_status == "success" for f in user_data.custom_fields) # Add when fields implemented
+
+        if any_sub_task_success:
+            user_data.upload_status = "partial"
+            user_data.error_message = (
+                "User created, but one or more addresses/fields failed."
             )
             logger.warning(
-                f"Partial or failed upload for user {user_log_id}. See address/field statuses."
+                f"Partially processed user {user_data.email}. See sub-task statuses."
             )
         else:
-            user_data.upload_status = "success"
-            logger.info(f"Successfully processed user {user_log_id}.")
-
-    except (ApiHttpError, ApiClientError) as e:
-        # Handle errors during the initial user creation POST
-        logger.error(f"Failed to create user {user_log_id}. Error: {e}")
-        user_data.upload_status = "failed"
-    except (
-        Exception
-    ) as e:  # Catch any other unexpected errors during user creation phase
-        logger.exception(f"Unexpected error processing user {user_log_id}. Error: {e}")
-        user_data.upload_status = "failed"
-
-    # No return value needed, status is updated on the input object
+            # User created, but *all* subsequent steps failed
+            user_data.upload_status = "failed"
+            user_data.error_message = "User created, but all addresses/fields failed."
+            logger.error(
+                f"Failed to process user {user_data.email} after user creation. All sub-tasks failed."
+            )
 
 
 # --- Main Orchestration Function ---
@@ -194,8 +336,9 @@ async def run_bulk_upload(
         tasks = []
         for user_data in users_data:
             # Pass the SAME client instance to each task
-            task = asyncio.create_task(upload_single_user(user_data, client))
-            tasks.append(task)
+            if user_data.customer_id is None:
+                task = asyncio.create_task(upload_single_user(user_data, client))
+                tasks.append(task)
 
         logger.info(f"Starting concurrent upload for {len(tasks)} users...")
 
@@ -212,13 +355,12 @@ async def run_bulk_upload(
         # --- Process Results (optional, as status is on user_data objects) ---
         for index, result in enumerate(results):
             user_data = users_data[index]  # Get corresponding user data
-            user_log_id: str = user_data.password + " - " + user_data.email
             if isinstance(result, Exception):
                 # An unexpected exception occurred *outside* the try/except blocks
                 # within upload_single_user (less likely with good handling inside).
                 # Or gather itself had an issue.
                 logger.error(
-                    f"Task for user {user_log_id} failed unexpectedly: {result}"
+                    f"Task for user {user_data.email} failed unexpectedly: {result}"
                 )
                 # Ensure status reflects this unexpected failure if not already set
                 if user_data.upload_status not in ["failed", "partial"]:
