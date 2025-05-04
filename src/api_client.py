@@ -22,7 +22,7 @@ from src.utils import yelo_headers, logger
 load_dotenv()
 YELO_API_BASE_URL = os.getenv("YELO_API_BASE_URL")
 YELO_API_TOKEN = os.getenv("YELO_API_TOKEN")
-DEFAULT_TIMEOUT = 15.0
+DEFAULT_TIMEOUT = 60.0
 
 
 # --- API Client Class ---
