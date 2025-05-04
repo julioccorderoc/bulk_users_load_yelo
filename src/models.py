@@ -1,8 +1,15 @@
-from pydantic import BaseModel
+import os
+
+from pydantic import BaseModel, Field, AliasChoices
+from dotenv import load_dotenv
+
+
+load_dotenv()
+YELO_API_KEY = os.getenv("YELO_API_KEY")
 
 
 class PostUserYelo(BaseModel):
-    api_key: str
+    api_key: str = YELO_API_KEY
     first_name: str
     last_name: str
     email: str
@@ -10,18 +17,18 @@ class PostUserYelo(BaseModel):
     password: str
 
 
-class CustomerIdBody(BaseModel):
-    customer_id: int
+class DataUser(BaseModel):
+    customer_id: int = Field(validation_alias=AliasChoices("customer_id", "vendor_id"))
 
 
 class ResponsePostUserYelo(BaseModel):
     message: str
     status: int
-    data: CustomerIdBody
+    data: DataUser
 
 
 class PostUserAddressYelo(BaseModel):
-    api_key: str
+    api_key: str = YELO_API_KEY
     customer_id: int
     address: str
     house_no: str
@@ -32,17 +39,15 @@ class PostUserAddressYelo(BaseModel):
     name: str  # Full user name
     loc_type: int  # 0 home, 1 work , 2 other. Other can hold up to 10 addresses
 
-    # VALIDAR que, entre el correo y el telefono, al menos uno de los dos sea obligatorio
 
-
-class AddressIdBody(BaseModel):
+class DataAddress(BaseModel):
     id: int
 
 
 class ResponsePostAddressYelo(BaseModel):
     message: str
     status: int
-    data: AddressIdBody
+    data: DataAddress
 
 
 class GetUserYelo(BaseModel):
