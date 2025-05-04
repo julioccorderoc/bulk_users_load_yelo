@@ -76,6 +76,7 @@ class CleanAddress(BaseModel):
     latitude: float
     longitude: float
     house_no: str
+    loc_type: int
     id: int | None = None
     upload_status: str | None = None
 
