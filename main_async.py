@@ -1,9 +1,7 @@
 """
-Here we will execute the bulk upload stragy:
-    1. Create users
-    2. Create addresses
-    3. Create custom fields
-    4. Log all errors and details in a log file, and output in the terminal a proper summary
+Here we will:
+    1. Load the clean data from the JSON file.
+    2. Upload the data to the API in bulk.
 """
 
 import asyncio
