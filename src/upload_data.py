@@ -1,5 +1,7 @@
 import asyncio
+import json
 import os
+from pathlib import Path
 
 # from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -22,13 +24,40 @@ from src.models import (
 
 # --- Environment Variables ---
 load_dotenv()
-YELO_API_BASE_URL = os.getenv("YELO_API_BASE_URL")
 POST_USER_ENDPOINT = os.getenv("POST_USER_ENDPOINT")
 POST_ADDRESS_ENDPOINT = os.getenv("POST_ADDRESS_ENDPOINT")
 POST_CUSTOM_FIELD_ENDPOINT = os.getenv("POST_CUSTOM_FIELD_ENDPOINT")
 
 
-async def _create_yelo_user(user_data: CleanUserData, client: ApiClient) -> str | None:
+def _save_results_to_json(users_data: list[CleanUserData], file_path: Path):
+    """Saves the list of user data objects (with final status) to a JSON file."""
+
+    logger.info(f"Attempting to save final results to: {file_path}")
+    try:
+        results_to_save = [user.model_dump(mode="json") for user in users_data]
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(results_to_save, f, indent=4, ensure_ascii=False)
+
+        logger.info(
+            f"Successfully saved final results for {len(users_data)} users to {file_path}."
+        )
+
+    except TypeError as e:
+        logger.error(
+            f"Failed to serialize results to JSON. Ensure all data is JSON-serializable. Error: {e}."
+        )
+    except IOError as e:
+        logger.error(
+            f"Failed to write results file to {file_path}. Check permissions and path. Error: {e}."
+        )
+    except Exception as e:
+        logger.exception(
+            f"An unexpected error occurred while saving results to {file_path}. Error: {e}."
+        )
+
+
+async def _create_user(user_data: CleanUserData, client: ApiClient) -> str | None:
     """
     Attempts to create a single user.
 
@@ -93,7 +122,7 @@ async def _create_yelo_user(user_data: CleanUserData, client: ApiClient) -> str 
         return None
 
 
-async def _create_yelo_addresses(
+async def _create_addresses(
     user_data: CleanUserData, customer_id: str, client: ApiClient
 ) -> bool:
     """
@@ -174,7 +203,6 @@ async def _create_yelo_addresses(
                 f"Failed to create address index {index} for user {customer_id}. Data: {address_data.model_dump_json(exclude={'upload_status', 'id'})}. Error: {e}."
             )
             address_data.upload_status = "failed"
-            # Store error specific to this address if needed
             address_data.error_message = str(e)
             any_address_failed = True
         except Exception as e:
@@ -191,13 +219,14 @@ async def _create_yelo_addresses(
         )
         return False
     else:
-        logger.info(
-            f"All {len(user_data.addresses)} addresses uploaded successfully for user {customer_id}."
-        )
+        if user_data.addresses:
+            logger.info(
+                f"All {len(user_data.addresses)} addresses processed successfully for user {customer_id}."
+            )
         return True
 
 
-async def _create_yelo_custom_fields(
+async def _create_custom_fields(
     user_data: CleanUserData, customer_id: str, client: ApiClient
 ) -> bool:
     """
@@ -259,7 +288,7 @@ async def _create_yelo_custom_fields(
     return True
 
 
-async def upload_single_user(user_data: CleanUserData, client: ApiClient):
+async def upload_user(user_data: CleanUserData, client: ApiClient):
     """
     Orchestrates the upload of one user with their addresses and custom fields.
     Updates the overall status field on the user_data object.
@@ -269,7 +298,7 @@ async def upload_single_user(user_data: CleanUserData, client: ApiClient):
     user_data.upload_status = "processing"
 
     # --- Step 1: Create User ---
-    customer_id = await _create_yelo_user(user_data, client)
+    customer_id = await _create_user(user_data, client)
 
     if customer_id is None:
         user_data.upload_status = "failed"
@@ -281,14 +310,10 @@ async def upload_single_user(user_data: CleanUserData, client: ApiClient):
     user_data.customer_id = customer_id
 
     # --- Step 2: Create Addresses ---
-    all_addresses_succeeded = await _create_yelo_addresses(
-        user_data, customer_id, client
-    )
+    all_addresses_succeeded = await _create_addresses(user_data, customer_id, client)
 
     # --- Step 3: Create Custom Fields ---
-    all_fields_succeeded = await _create_yelo_custom_fields(
-        user_data, customer_id, client
-    )
+    all_fields_succeeded = await _create_custom_fields(user_data, customer_id, client)
 
     # --- Step 4: Determine Final User Status ---
     if all_addresses_succeeded and all_fields_succeeded:
@@ -322,72 +347,88 @@ async def upload_single_user(user_data: CleanUserData, client: ApiClient):
 
 # --- Main Orchestration Function ---
 async def run_bulk_upload(
-    users_data: list[CleanUserData], base_url: str = YELO_API_BASE_URL
+    base_url: str,
+    users_data: list[CleanUserData],
+    results_file_path: Path,
 ):
     """
     Runs the bulk upload process concurrently for all users.
     """
-    success_count = 0
-    failed_count = 0
-    partial_count = 0
+    success_count: int = 0
+    failed_count: int = 0
+    partial_count: int = 0
 
     async with ApiClient(base_url=base_url) as client:
-        # Create a list of tasks to run concurrently
-        tasks = []
-        for user_data in users_data:
-            # Pass the SAME client instance to each task
-            if user_data.customer_id is None:
-                task = asyncio.create_task(upload_single_user(user_data, client))
-                tasks.append(task)
+        tasks_to_run = []
+        users_to_process_indices = []
+        for index, user_data_item in enumerate(users_data):
+            if user_data_item.customer_id is None:
+                users_to_process_indices.append(index)
+                task = asyncio.create_task(upload_user(user_data_item, client))
+                tasks_to_run.append(task)
+            else:
+                logger.info(f"User {user_data_item.email} already processed. Skipping.")
 
-        logger.info(f"Starting concurrent upload for {len(tasks)} users...")
+        if not tasks_to_run:
+            logger.warning("No users to process. Nothing to upload.")
+            return
+
+        logger.info(f"Starting concurrent upload for {len(tasks_to_run)} users...")
 
         # --- Run tasks concurrently and wait for completion ---
-        # `asyncio.gather` runs them concurrently.
         # `return_exceptions=True` means if one task fails with an exception,
         # gather won't immediately stop; it will return the exception object
-        # in the results list for that task. This is useful here because
-        # an unexpected error in `upload_single_user` shouldn't halt others.
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # in the results list for that task. An unexpected error in
+        # `upload_user` shouldn't halt others.
+        results = await asyncio.gather(*tasks_to_run, return_exceptions=True)
 
         logger.info("Concurrent uploads finished. Processing results...")
 
-        # --- Process Results (optional, as status is on user_data objects) ---
+        # --- Process Results ---
         for index, result in enumerate(results):
-            user_data = users_data[index]  # Get corresponding user data
+            original_index: int = users_to_process_indices[index]
+            user_data_result = users_data[original_index]
+            final_status = user_data_result.upload_status
             if isinstance(result, Exception):
                 # An unexpected exception occurred *outside* the try/except blocks
-                # within upload_single_user (less likely with good handling inside).
+                # within upload_user (less likely with good handling inside).
                 # Or gather itself had an issue.
                 logger.error(
-                    f"Task for user {user_data.email} failed unexpectedly: {result}"
+                    f"Task for user {user_data_result.email} failed unexpectedly: {result}"
                 )
                 # Ensure status reflects this unexpected failure if not already set
-                if user_data.upload_status not in ["failed", "partial"]:
-                    user_data.upload_status = "failed"
-
-            # Tally results based on the status set within upload_single_user
-            if user_data.upload_status == "success":
-                success_count += 1
-            elif user_data.upload_status == "partial":
-                partial_count += 1
-            else:  # None, "processing", "failed", or unexpected error case
-                failed_count += 1
-                # Ensure failed status if processing was interrupted (e.g., status is still None or processing)
-                if user_data.upload_status not in ["failed", "partial"]:
-                    user_data.upload_status = "failed"
-                    if not user_data.error_message:
-                        user_data.error_message = (
-                            "Processing did not complete successfully."
+                if final_status not in ["failed", "partial"]:
+                    final_status = "failed"
+                    if not user_data_result.error_message:
+                        user_data_result.error_message = (
+                            f"Unexpected task failure: {result}"
                         )
 
+            # Tally results based on the status set within upload_user
+            if final_status not in ["success", "partial", "failed"]:
+                logger.warning(
+                    f"User {user_data_result.email} ended with unexpected status. Counting as failed."
+                )
+                final_status = "failed"
+            if not user_data_result.error_message:
+                user_data_result.error_message = (
+                    "Processing did not complete or ended in unexpected state."
+                )
+
+            if final_status == "success":
+                success_count += 1
+            elif final_status == "partial":
+                partial_count += 1
+            else:  # "failed"
+                failed_count += 1
+                if user_data_result.error_message:
+                    logger.debug(
+                        f"Final failure reason for {user_data_result.email}: {user_data_result.error_message}"
+                    )
+
+    _save_results_to_json(users_data, results_file_path)
     logger.info("--- Bulk Upload Summary ---")
     logger.info(f"Total users processed: {len(users_data)}")
     logger.info(f"Successful: {success_count}")
     logger.info(f"Partial : {partial_count}")
     logger.info(f"Failed: {failed_count}")
-
-    # --- Optional: Save results/status back to a file/database ---
-    # for user in users_data:
-    #     print(f"User: {user.client_identifier}, Status: {user.upload_status}, Yelo ID: {user.yelo_user_id}, Error: {user.error_message}")
-    #     # You could write user.model_dump_json() to a results file
