@@ -23,14 +23,18 @@ from src.upload_data import run_bulk_upload
 
 # --- Environment Variables ---
 load_dotenv()
+YELO_API_BASE_URL = os.getenv("YELO_API_BASE_URL")
 CLEAN_DATA_DIR = os.getenv("CLEAN_DATA_DIR")
 CLEAN_DATA_FILE_NAME = os.getenv("CLEAN_DATA_FILE_NAME")
-
+RESULTS_DIR = os.getenv("RESULTS_DIR")
+RESULTS_FILE_NAME = os.getenv("RESULTS_FILE_NAME")
 
 # --- Configuration ---
 CURRENT_DIR = Path(".")
-TARGET_DIR = CURRENT_DIR / CLEAN_DATA_DIR
-JSON_PATH = TARGET_DIR / CLEAN_DATA_FILE_NAME
+DATA_SOURCE_DIR = CURRENT_DIR / CLEAN_DATA_DIR
+OUTPUT_DIR = CURRENT_DIR / RESULTS_DIR
+JSON_PATH = DATA_SOURCE_DIR / CLEAN_DATA_FILE_NAME
+RESULTS_PATH = OUTPUT_DIR / RESULTS_FILE_NAME
 
 
 # --- Main Processing ---
@@ -60,7 +64,11 @@ async def main():
     )
 
     try:
-        await run_bulk_upload(all_users_data)
+        await run_bulk_upload(
+            base_url=YELO_API_BASE_URL,
+            users_data=all_users_data,
+            results_file_path=RESULTS_PATH,
+        )
         logger.info("Bulk upload process finished.")
     except Exception as e:
         logger.exception(
