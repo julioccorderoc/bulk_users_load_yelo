@@ -1,5 +1,11 @@
 """
-Script to clean and transform raw user data from CSV to JSON format.
+This script will clean and transform raw user data from CSV to JSON format.
+
+Here we will:
+    1. Load, clean and transform the data.
+    2. Group the data by unique users.
+    3. Segment users based on phone/email availability.
+    4. Save segmented data to separate JSON files.
 """
 
 import pandas as pd

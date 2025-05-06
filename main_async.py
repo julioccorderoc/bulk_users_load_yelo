@@ -1,4 +1,6 @@
 """
+This script will handle the bulk upload of user data to the Yelo API (asyncronously and concurrently).
+
 Here we will:
     1. Load the clean data from the JSON file.
     2. Upload the data to the API in bulk.
