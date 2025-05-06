@@ -1,13 +1,8 @@
 import asyncio
-import json
-import os
 from pathlib import Path
 
-# from pydantic import BaseModel
-from dotenv import load_dotenv
-
 from src.api_client import ApiClient
-from src.utils import logger
+from src.utils import logger, save_to_json
 from src.custom_exceptions import (
     ApiHttpError,
     ApiClientError,
@@ -22,42 +17,13 @@ from src.models import (
 )
 
 
-# --- Environment Variables ---
-load_dotenv()
-POST_USER_ENDPOINT = os.getenv("POST_USER_ENDPOINT")
-POST_ADDRESS_ENDPOINT = os.getenv("POST_ADDRESS_ENDPOINT")
-POST_CUSTOM_FIELD_ENDPOINT = os.getenv("POST_CUSTOM_FIELD_ENDPOINT")
+# --- Constants ---
+POST_USER_ENDPOINT = "/open/admin/customer/add"
+POST_ADDRESS_ENDPOINT = "/open/admin/customer/address/add"
+POST_CUSTOM_FIELD_ENDPOINT = "/open/admin/customer/custom/add"
 
 
-def _save_results_to_json(users_data: list[CleanUserData], file_path: Path):
-    """Saves the list of user data objects (with final status) to a JSON file."""
-
-    logger.info(f"Attempting to save final results to: {file_path}")
-    try:
-        results_to_save = [user.model_dump(mode="json") for user in users_data]
-
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(results_to_save, f, indent=4, ensure_ascii=False)
-
-        logger.info(
-            f"Successfully saved final results for {len(users_data)} users to {file_path}."
-        )
-
-    except TypeError as e:
-        logger.error(
-            f"Failed to serialize results to JSON. Ensure all data is JSON-serializable. Error: {e}."
-        )
-    except IOError as e:
-        logger.error(
-            f"Failed to write results file to {file_path}. Check permissions and path. Error: {e}."
-        )
-    except Exception as e:
-        logger.exception(
-            f"An unexpected error occurred while saving results to {file_path}. Error: {e}."
-        )
-
-
-async def _create_user(user_data: CleanUserData, client: ApiClient) -> str | None:
+async def _post_user(user_data: CleanUserData, client: ApiClient) -> str | None:
     """
     Attempts to create a single user.
 
@@ -122,7 +88,7 @@ async def _create_user(user_data: CleanUserData, client: ApiClient) -> str | Non
         return None
 
 
-async def _create_addresses(
+async def _post_addresses(
     user_data: CleanUserData, customer_id: str, client: ApiClient
 ) -> bool:
     """
@@ -226,7 +192,7 @@ async def _create_addresses(
         return True
 
 
-async def _create_custom_fields(
+async def _post_custom_fields(
     user_data: CleanUserData, customer_id: str, client: ApiClient
 ) -> bool:
     """
@@ -298,7 +264,7 @@ async def upload_user(user_data: CleanUserData, client: ApiClient):
     user_data.upload_status = "processing"
 
     # --- Step 1: Create User ---
-    customer_id = await _create_user(user_data, client)
+    customer_id = await _post_user(user_data, client)
 
     if customer_id is None:
         user_data.upload_status = "failed"
@@ -310,10 +276,10 @@ async def upload_user(user_data: CleanUserData, client: ApiClient):
     user_data.customer_id = customer_id
 
     # --- Step 2: Create Addresses ---
-    all_addresses_succeeded = await _create_addresses(user_data, customer_id, client)
+    all_addresses_succeeded = await _post_addresses(user_data, customer_id, client)
 
     # --- Step 3: Create Custom Fields ---
-    all_fields_succeeded = await _create_custom_fields(user_data, customer_id, client)
+    all_fields_succeeded = await _post_custom_fields(user_data, customer_id, client)
 
     # --- Step 4: Determine Final User Status ---
     if all_addresses_succeeded and all_fields_succeeded:
@@ -426,7 +392,7 @@ async def run_bulk_upload(
                         f"Final failure reason for {user_data_result.email}: {user_data_result.error_message}"
                     )
 
-    _save_results_to_json(users_data, results_file_path)
+    save_to_json(users_data, results_file_path)
     logger.info("--- Bulk Upload Summary ---")
     logger.info(f"Total users processed: {len(users_data)}")
     logger.info(f"Successful: {success_count}")
