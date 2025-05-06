@@ -16,12 +16,12 @@ from src.custom_exceptions import (
     ApiResponseValidationError,
 )
 from src.utils import yelo_headers, logger
+from src.models import YeloResponses
 
 
 # --- Environment Variables ---
 load_dotenv()
 YELO_API_BASE_URL = os.getenv("YELO_API_BASE_URL")
-YELO_API_TOKEN = os.getenv("YELO_API_TOKEN")
 DEFAULT_TIMEOUT = 60.0
 
 
@@ -112,7 +112,7 @@ class ApiClient:
         payload: BaseModel | list[Type[BaseModel]] | list | dict | None = None,
         params: dict[str, Any] | None = None,
         expected_status: int = 200,  # Default expected success code for GET/PUT/DELETE
-        response_model: Type[BaseModel]
+        response_model: Type[YeloResponses]
         | None = None,  # Optional Pydantic model for response validation
     ) -> Any:
         """
@@ -139,10 +139,9 @@ class ApiClient:
             ApiResponseValidationError: If response validation against response_model fails.
             ApiClientError: For other generic client-side errors.
         """
-        # Ensure endpoint doesn't start with a slash if base_url ends with one
+
         endpoint = endpoint.lstrip("/")
 
-        # Serialize Pydantic models if provided as payload
         json_payload = None
         if isinstance(payload, BaseModel):
             json_payload = payload.model_dump(mode="json")
@@ -154,16 +153,14 @@ class ApiClient:
             response = await self._client.request(
                 method=method,
                 url=endpoint,
-                json=json_payload,  # `json` param handles serialization and content-type header
+                json=json_payload,
                 params=params,
             )
 
             # --- Fail Fast on HTTP Errors ---
-            # Check if the status code is what we expected or a general success code
-            # Use raise_for_status() for standard HTTP error checking (4xx, 5xx)
-            response.raise_for_status()  # Raises httpx.HTTPStatusError for 4xx/5xx
+            response.raise_for_status()
 
-            # --- Optional: Stricter Check for Specific Success Code ---
+            # --- Check for Specific Success Code ---
             if response.status_code != expected_status:
                 logger.error(
                     f"API Error: Expected status {expected_status}, got {response.status_code} for {method} {endpoint}"
@@ -171,11 +168,10 @@ class ApiClient:
                 raise ApiHttpError(
                     f"Unexpected status code: {response.status_code}",
                     status_code=response.status_code,
-                    response_body=response.text,  # Include response body for debugging
+                    response_body=response.text,
                 )
 
             # --- Process Successful Response ---
-            # Handle cases with no content (e.g., 204 No Content)
             if response.status_code == 204 or not response.content:
                 logger.info(
                     f"Request successful ({response.status_code}), no content returned."
@@ -202,12 +198,15 @@ class ApiClient:
                     response_body=response.text,
                 ) from e
 
-            # --- Optional: Validate Response Structure ---
+            # --- Validate Response Structure ---
             if response_model:
                 try:
                     validated_response = response_model.model_validate(json_response)
                     logger.debug(
                         f"Response validated successfully against {response_model.__name__}"
+                    )
+                    logger.info(
+                        f"Response status code: {validated_response.status} | Message: {validated_response.message}"
                     )
                     return validated_response
                 except ValidationError as e:
