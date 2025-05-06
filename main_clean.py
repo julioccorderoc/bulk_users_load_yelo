@@ -52,6 +52,13 @@ os.makedirs(CLEAN_DATA_DIR, exist_ok=True)
 
 
 # ---------------------------
+# --- 1. RENAME ORIGINAL FILE
+# ---------------------------
+
+# This is done in the excel file
+# change the original names of the columns to the ones used in the code
+
+# ---------------------------
 # --- 2. LOAD ---------------
 # ---------------------------
 
@@ -69,7 +76,7 @@ initial_row_count = len(df)
 initial_unique_users = df["num_document"].nunique()
 
 # ---------------------------
-# --- 2. CLEAN --------------
+# --- 3. CLEAN --------------
 # ---------------------------
 
 # Remove unused columns
@@ -77,7 +84,14 @@ columns_to_drop = ["num_interlocutor", "saldo_disponible", "fijo", "NSE"]
 df.drop(columns=columns_to_drop, inplace=True, errors="ignore")
 
 # Remove NA values
+essential_columns = ["num_document", "apellidos_nombres"]
+df.dropna(subset=essential_columns, inplace=True)
 
+rows_dropped_for_errors = initial_row_count - len(df)
+if rows_dropped_for_errors > 0:
+    print(
+        f"Removed {rows_dropped_for_errors} rows missing essential data in: {', '.join(essential_columns)}"
+    )
 
 # Keep only unique "cuenta_contrato" values
 rows_before_cc_drop = len(df)
@@ -91,7 +105,7 @@ unique_users_after_cc_drop = df["num_document"].nunique()
 
 
 # ---------------------------
-# --- 3. TRANSFORM ----------
+# --- 4. TRANSFORM ----------
 # ---------------------------
 
 # Adress Transformation
@@ -147,20 +161,24 @@ except Exception as e:
 
 
 # ---------------------------
-# --- 4. GROUP --------------
+# --- 5. GROUP --------------
 # ---------------------------
 
 logger.info("Grouping data by 'num_document'...")
 
 # Apply grouping and aggregation
-grouped_data = df.groupby("num_document").apply(aggregate_user_data).reset_index()
+grouped_data = (
+    df.groupby("num_document")
+    .apply(aggregate_user_data, include_groups=False)
+    .reset_index()
+)
 unique_user_count = len(grouped_data)
 rows_dropped_count = initial_row_count - unique_user_count
 logger.info(f"Grouping complete. {len(grouped_data)} unique users found.")
 
 
 # ---------------------------
-# --- 5.Target Schema -------
+# --- 6.Target Schema -------
 # ---------------------------
 
 logger.info("Transforming grouped data to target JSON structure...")
@@ -168,13 +186,14 @@ transformed_users = []
 for _, user in grouped_data.iterrows():
     # Format addresses according to CleanAddress model structure
     clean_addresses = []
-    for idx, addr in enumerate(user["addresses_raw"]):
+    for index, addr in enumerate(user["addresses_raw"]):
+        loc_type_value = index if index <= 2 else 2  # loc type can only be 0, 1, or 2
         clean_address = {
             "address": addr["address"],
             "latitude": addr["latitude"],
             "longitude": addr["longitude"],
             "house_no": str(addr["house_no"]),
-            "loc_type": idx,
+            "loc_type": loc_type_value,
             "id": None,
             "upload_status": None,
         }
@@ -196,7 +215,7 @@ for _, user in grouped_data.iterrows():
 
 
 # ---------------------------
-# --- 6. SEGMENT ------------
+# --- 7. SEGMENT ------------
 # ---------------------------
 
 logger.info("Segmenting users based on phone/email availability...")
@@ -234,7 +253,7 @@ else:
     logger.info(f"Total users segmented: {total_segmented}")
 
 # ---------------------------
-# --- 7. OUTPUT -------------
+# --- 8. OUTPUT -------------
 # ---------------------------
 
 logger.info("--- Processing Summary ---")
