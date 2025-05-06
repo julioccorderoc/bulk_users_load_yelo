@@ -8,6 +8,11 @@ load_dotenv()
 YELO_API_KEY = os.getenv("YELO_API_KEY")
 
 
+class YeloResponses(BaseModel):
+    message: str
+    status: int
+
+
 class PostUserYelo(BaseModel):
     api_key: str = YELO_API_KEY
     first_name: str
@@ -21,9 +26,7 @@ class DataUser(BaseModel):
     customer_id: int = Field(validation_alias=AliasChoices("customer_id", "vendor_id"))
 
 
-class ResponsePostUserYelo(BaseModel):
-    message: str
-    status: int
+class ResponsePostUserYelo(YeloResponses):
     data: DataUser
 
 
@@ -44,9 +47,7 @@ class DataAddress(BaseModel):
     id: int
 
 
-class ResponsePostAddressYelo(BaseModel):
-    message: str
-    status: int
+class ResponsePostAddressYelo(YeloResponses):
     data: DataAddress
 
 
