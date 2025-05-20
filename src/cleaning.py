@@ -82,9 +82,16 @@ def split_name(full_name):
         return " ".join(parts[:2]), " ".join(parts[2:])
 
 
-def aggregate_user_data(group):
-    """Aggregates data for a single user group."""
-    # Get first non-null value for single fields
+def aggregate_user_data(group) -> pd.Series:
+    """
+    Aggregates data for a single user group. Optimized to avoid .iterrows().
+    """
+    # 1. Get User Identifier
+    user_num_ident = str(
+        group.name
+    )  # group.name holds the value of 'NUM_IDENT' for this group
+
+    # 2. Extract Single Fields (keeping original logic for exact behavior match)
     first_name = (
         group["first_name"].dropna().iloc[0]
         if not group["first_name"].dropna().empty
@@ -96,45 +103,48 @@ def aggregate_user_data(group):
         else None
     )
 
-    # Get unique non-null emails and phones
     emails = group["CORREO"].dropna().unique()
-    phones = group["CELULAR_FINAL"].dropna().unique()
-
-    # Select the first unique email found
     selected_email = emails[0] if len(emails) > 0 else None
-    # Select the first unique formatted phone found
+
+    phones = group["CELULAR_FINAL"].dropna().unique()
     selected_phone = phones[0] if len(phones) > 0 else None
 
-    # Get the NUM_IDENT value for the user
-    user_num_ident = str(group.name)
+    # 3. Create addresses_raw List (Optimized)
+    address_defining_columns = ["full_address", "CORD_Y", "CORD_X", "CTA_CONTR"]
 
-    # Create list of addresses (simple dict structure for now)
+    # Get unique address definitions for this user
+    # Using .copy() to avoid potential SettingWithCopyWarning if any modifications were planned on unique_addresses_df,
+    # though not strictly necessary if only reading from it for to_dict.
+    unique_addresses_df = group[address_defining_columns].drop_duplicates().copy()
+
     addresses = []
-    # Drop duplicates based on all address fields to avoid identical entries
-    for _, row in (
-        group[["full_address", "CORD_Y", "CORD_X", "CTA_CONTR"]]
-        .drop_duplicates()
-        .iterrows()
-    ):
-        # Skip if essential address info is missing
-        if (
-            pd.isna(row["full_address"])
-            and pd.isna(row["CORD_Y"])
-            and pd.isna(row["CORD_X"])
-        ):
-            continue
-        addresses.append(
+    if not unique_addresses_df.empty:
+        # Convert the DataFrame of unique addresses directly to a list of Python dictionaries
+        address_records = unique_addresses_df.to_dict(orient="records")
+
+        # Use a list comprehension to transform these records into the desired final structure
+        addresses = [
             {
-                "address": row["full_address"],
-                "latitude": row["CORD_Y"] if pd.notna(row["CORD_Y"]) else None,
-                "longitude": row["CORD_X"] if pd.notna(row["CORD_X"]) else None,
-                "house_no": row["CTA_CONTR"],
-                "postal_code": user_num_ident,
+                "address": record.get(
+                    "full_address"
+                ),  # .get() is safer if column might be missing, though unlikely here
+                "latitude": record.get("CORD_Y")
+                if pd.notna(record.get("CORD_Y"))
+                else None,
+                "longitude": record.get("CORD_X")
+                if pd.notna(record.get("CORD_X"))
+                else None,
+                "house_no": str(record.get("CTA_CONTR"))
+                if pd.notna(record.get("CTA_CONTR"))
+                else None,
+                "postal_code": user_num_ident,  # NUM_IDENT of the user for all their addresses
             }
-        )
+            for record in address_records
+        ]
 
     return pd.Series(
         {
+            "INTERLOCUTOR": group["INTERLOCUTOR"].iloc[0],
             "first_name": first_name,
             "last_name": last_name,
             "email": selected_email,

@@ -52,7 +52,7 @@ unique_users_after_cc_drop: int = 0
 
 
 # --- Main Processing ---
-logger.info("Starting data processing...")
+logger.info(f"Starting data processing for: {FILE_DIR}...")
 os.makedirs(CLEAN_DATA_DIR, exist_ok=True)
 
 
@@ -62,13 +62,35 @@ os.makedirs(CLEAN_DATA_DIR, exist_ok=True)
 
 # This is done in the excel file (if needed)
 # change the original names of the columns to the ones used in the code
+# This are the correct names: INTERLOCUTOR;NUM_IDENT;CTA_CONTR;CATEGORIA_CTA;NOMBRE;SALDO_DISPONIBLE;CELULAR;CELULAR_FINAL;CORREO;CTA_CONTR2;DIREC2;DISTRITO;NSE;CORD_X;CORD_Y
 
 # ---------------------------
 # --- 2. LOAD ---------------
 # ---------------------------
 
+column_dtypes = {
+    "INTERLOCUTOR": str,
+    "NUM_IDENT": str,
+    "NOMBRE": str,
+    "CATEGORIA_CTA": str,
+    "SALDO_DISPONIBLE": str,
+    "CELULAR": str,
+    "CELULAR_FINAL": str,
+    "CORREO": str,
+    "CTA_CONTR": str,
+    "CTA_CONTR2": str,
+    "DIREC2": str,
+    "DISTRITO": str,
+    "NSE": str,
+    "CORD_Y": str,
+    "CORD_X": str,
+}
+
+
 try:
-    df = pd.read_csv(FILE_DIR, delimiter=";")
+    df: pd.DataFrame = pd.read_csv(
+        FILE_DIR, delimiter=";", dtype=column_dtypes, engine="c"
+    )
     logger.info(f"Shape: {df.shape}")
 except FileNotFoundError:
     logger.info(f"ERROR: Input file '{FILE_DIR}' not found. Exiting.")
@@ -78,22 +100,24 @@ except Exception as e:
     exit()
 
 initial_row_count = len(df)
+logger.info(f"Loaded {initial_row_count} rows.")
+
 initial_unique_users = df["NUM_IDENT"].nunique()
+logger.info(f"Unique NUM_IDENT values: {initial_unique_users}")
 
 # ---------------------------
 # --- 3. CLEAN --------------
 # ---------------------------
 
 # Remove unused columns
-columns_to_drop = [
-    "INTERLOCUTOR",
+unused_columns = [
     "SALDO_DISPONIBLE",
     "fijo",
     "NSE",
     "CATEGORIA_CTA",
-    "CELULAR",
+    "CTA_CONTR2",
 ]
-df.drop(columns=columns_to_drop, inplace=True, errors="ignore")
+df.drop(columns=unused_columns, inplace=True, errors="ignore")
 
 # Remove NA values
 essential_columns = ["CTA_CONTR", "NUM_IDENT", "NOMBRE"]
@@ -101,9 +125,64 @@ df.dropna(subset=essential_columns, inplace=True)
 
 rows_dropped_for_errors = initial_row_count - len(df)
 if rows_dropped_for_errors > 0:
-    print(
+    logger.info(
         f"Removed {rows_dropped_for_errors} rows missing essential data in: {', '.join(essential_columns)}"
     )
+
+####
+
+logger.info("Cleaning and validating coordinate data (CORD_Y, CORD_X)...")
+coordinate_columns_to_process = ["CORD_Y", "CORD_X"]
+
+for col_name in coordinate_columns_to_process:
+    if col_name in df.columns:
+        # Count NaNs before coercion (if any already exist from CSV interpretation as empty strings)
+        nans_before_coercion = df[col_name].isna().sum()
+
+        # Coerce to numeric. Errors become NaN.
+        df[col_name] = pd.to_numeric(df[col_name], errors="coerce")
+
+        # Count NaNs after coercion.
+        nans_after_coercion = df[col_name].isna().sum()
+
+        newly_coerced_to_nan = nans_after_coercion - nans_before_coercion
+        if newly_coerced_to_nan > 0:
+            logger.info(
+                f"Column '{col_name}': {newly_coerced_to_nan} non-numeric values were converted to NaN."
+            )
+        if nans_after_coercion > 0:
+            logger.info(
+                f"Column '{col_name}': Total NaNs after coercion (including pre-existing): {nans_after_coercion}."
+            )
+    else:
+        logger.warning(f"Coordinate column '{col_name}' not found for processing.")
+
+# Drop rows where CORD_Y or CORD_X is NaN
+rows_before_coord_nan_drop = len(df)
+# Create a mask for rows where *either* CORD_Y or CORD_X is NaN
+# This assumes both columns should ideally exist. If one might be missing entirely,
+# you might want to adjust the subset list based on df.columns.
+columns_to_check_for_nan_in_coords = [
+    col for col in coordinate_columns_to_process if col in df.columns
+]
+
+if (
+    columns_to_check_for_nan_in_coords
+):  # Proceed only if at least one coordinate column exists
+    df.dropna(subset=columns_to_check_for_nan_in_coords, how="any", inplace=True)
+    rows_dropped_due_to_coord_nan = rows_before_coord_nan_drop - len(df)
+    if rows_dropped_due_to_coord_nan > 0:
+        logger.info(
+            f"Removed {rows_dropped_due_to_coord_nan} rows because CORD_Y or CORD_X was NaN (invalid or missing)."
+        )
+    else:
+        logger.info("No rows removed due to NaN coordinates.")
+else:
+    logger.warning("No coordinate columns found to check for NaN values to drop rows.")
+
+logger.info(f"Rows remaining after coordinate cleaning: {len(df)}")
+
+####
 
 # Keep only unique "CTA_CONTR" values
 rows_before_cc_drop = len(df)
@@ -134,11 +213,15 @@ df["full_address"] = df["full_address"].apply(lambda x: f"{x}, Peru" if x else "
 # Drop original address columns
 df.drop(columns=["DIREC2", "DISTRITO"], inplace=True)
 
+logger.info("Address transformation complete.")
+
 # Name Transformation
 df[["last_name", "first_name"]] = df["NOMBRE"].apply(
     lambda full_name: pd.Series(split_name(full_name))
 )
 df.drop(columns=["NOMBRE"], inplace=True)
+
+logger.info("Name transformation complete.")
 
 # Email Validation and Cleaning
 logger.info("Validating and cleaning email addresses...")
@@ -164,28 +247,89 @@ else:
     )
 
 
-# Phone Numbers transformation (now includes validation)
-logger.info("Formatting and validating phone numbers...")
-if "CELULAR_FINAL" in df.columns:
-    # Count non-NaN original phone numbers before transformation
-    original_phone_count = df["CELULAR_FINAL"].count()
-    df["CELULAR_FINAL"] = df["CELULAR_FINAL"].apply(
-        format_phone
-    )  # format_phone now validates
+# Initialize a Series to store the final, validated phone numbers
+# Start with None, and fill it as we find valid phones
+df["final_phone_processed"] = pd.Series([None] * len(df), dtype=object, index=df.index)
 
-    # Count valid, formatted phone numbers (non-NaN)
-    valid_phone_count = df["CELULAR_FINAL"].count()
-    phones_set_to_none = original_phone_count - valid_phone_count
-    if phones_set_to_none > 0:
+processed_count_log = {"attempted_cf": 0, "valid_cf": 0, "attempted_c": 0, "valid_c": 0}
+
+# Attempt 1: Use CELULAR_FINAL if it exists and is valid
+if "CELULAR_FINAL" in df.columns:
+    logger.info("Processing 'CELULAR_FINAL' column...")
+    # Iterate only over rows where final_phone_processed is still None
+    # and CELULAR_FINAL is not NaN (to avoid processing NaNs unnecessarily with format_phone)
+    mask_try_celular_final = (
+        df["final_phone_processed"].isna() & df["CELULAR_FINAL"].notna()
+    )
+    processed_count_log["attempted_cf"] = mask_try_celular_final.sum()
+
+    # Apply format_phone. It returns None if invalid.
+    validated_celular_final = df.loc[mask_try_celular_final, "CELULAR_FINAL"].apply(
+        format_phone
+    )
+
+    # Assign valid phones from CELULAR_FINAL to our target column
+    df.loc[
+        mask_try_celular_final & validated_celular_final.notna(),
+        "final_phone_processed",
+    ] = validated_celular_final[validated_celular_final.notna()]
+    processed_count_log["valid_cf"] = validated_celular_final.notna().sum()
+    logger.info(
+        f"  From 'CELULAR_FINAL': Attempted on {processed_count_log['attempted_cf']} non-empty values, found {processed_count_log['valid_cf']} valid phones."
+    )
+
+else:
+    logger.warning("Column 'CELULAR_FINAL' not found.")
+
+# Attempt 2: Use CELULAR for rows where CELULAR_FINAL was not found or was invalid
+if "CELULAR" in df.columns:
+    logger.info("Processing 'CELULAR' column as fallback...")
+    # Iterate only over rows where final_phone_processed is still None (meaning CELULAR_FINAL didn't yield a valid phone)
+    # and CELULAR is not NaN
+    mask_try_celular = df["final_phone_processed"].isna() & df["CELULAR"].notna()
+    processed_count_log["attempted_c"] = mask_try_celular.sum()
+
+    if mask_try_celular.any():  # Only apply if there are rows to process
+        validated_celular = df.loc[mask_try_celular, "CELULAR"].apply(format_phone)
+
+        # Assign valid phones from CELULAR to our target column
+        df.loc[
+            mask_try_celular & validated_celular.notna(), "final_phone_processed"
+        ] = validated_celular[validated_celular.notna()]
+        processed_count_log["valid_c"] = validated_celular.notna().sum()
         logger.info(
-            f"{phones_set_to_none} phone numbers were invalid or could not be formatted and were set to None."
+            f"  From 'CELULAR' (fallback): Attempted on {processed_count_log['attempted_c']} non-empty values, found {processed_count_log['valid_c']} valid phones."
+        )
+    else:
+        logger.info(
+            "  No rows needed fallback processing for 'CELULAR' or 'CELULAR' column is all NaN where fallback was needed."
         )
 else:
-    logger.warning("Column 'CELULAR_FINAL' not found for phone processing.")
-    df["CELULAR_FINAL"] = None  # Create column as None
+    logger.warning("Column 'CELULAR' not found for fallback.")
+
+# Now, 'final_phone_processed' contains the result.
+# We need to update the column name used by the rest of the script (e.g., aggregate_user_data expects 'CELULAR_FINAL')
+# So, we can drop the original 'CELULAR_FINAL' (if it exists) and 'CELULAR' (if it exists and you want to),
+# and rename 'final_phone_processed' to 'CELULAR_FINAL'.
+
+if "CELULAR_FINAL" in df.columns:
+    df.drop(columns=["CELULAR_FINAL"], inplace=True, errors="ignore")
+# Decide if you want to drop the original "CELULAR" column as well
+if "CELULAR" in df.columns:
+    df.drop(columns=["CELULAR"], inplace=True, errors="ignore")
+
+df.rename(columns={"final_phone_processed": "CELULAR_FINAL"}, inplace=True)
+
+total_valid_phones = df[
+    "CELULAR_FINAL"
+].count()  # Count non-NaN in the final result column
+logger.info(
+    f"Total valid phone numbers after processing both fields: {total_valid_phones}."
+)
 
 # Reorder columns
 intermediate_order = [
+    "INTERLOCUTOR",
     "NUM_IDENT",
     "first_name",
     "last_name",
@@ -206,11 +350,11 @@ logger.info("\nSample of data before grouping:\n\n")
 print(df.head(3))
 print("\n\n")
 
-# Intermediate Checkpoint
-try:
-    df.to_json(CHECKPOINT_FILE, orient="records", indent=4)
-except Exception as e:
-    logger.warning(f"Warning: Failed to save checkpoint file: {e}.\n")
+# # Intermediate Checkpoint
+# try:
+#     df.to_json(CHECKPOINT_FILE, orient="records", indent=4)
+# except Exception as e:
+#     logger.warning(f"Warning: Failed to save checkpoint file: {e}.\n")
 
 
 # ---------------------------
@@ -254,7 +398,7 @@ for _, user in grouped_data.iterrows():
         clean_addresses.append(clean_address)
 
     user_data = {
-        "password": str(user["NUM_IDENT"]),
+        "password": str(user["INTERLOCUTOR"]),
         "first_name": user["first_name"],
         "last_name": user["last_name"],
         "email": user["email"],
