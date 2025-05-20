@@ -56,10 +56,7 @@ def load_users_from_json(
             f"Data validation failed for records in {file_path}. See details below."
         )
         logger.error(e)
-        raise ValidationError(
-            "JSON data does not conform to UserUploadData schema.",
-            model=validation_model,
-        ) from e
+        raise ValidationError("JSON data does not conform to UserUploadData schema.")
     except Exception as e:
         logger.exception(
             f"An unexpected error occurred while loading data from {file_path}. Error: {e}"

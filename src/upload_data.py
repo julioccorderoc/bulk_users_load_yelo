@@ -376,10 +376,10 @@ async def run_bulk_upload(
                     f"User {user_data_result.email} ended with unexpected status. Counting as failed."
                 )
                 final_status = "failed"
-            if not user_data_result.error_message:
-                user_data_result.error_message = (
-                    "Processing did not complete or ended in unexpected state."
-                )
+                if not user_data_result.error_message:
+                    user_data_result.error_message = (
+                        "Processing did not complete or ended in unexpected state."
+                    )
 
             if final_status == "success":
                 success_count += 1

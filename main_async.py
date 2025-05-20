@@ -23,11 +23,11 @@ from src.upload_data import run_bulk_upload
 
 # --- Environment Variables ---
 load_dotenv()
-YELO_API_BASE_URL = os.getenv("YELO_API_BASE_URL")
-CLEAN_DATA_DIR = os.getenv("CLEAN_DATA_DIR")
-CLEAN_DATA_FILE_NAME = os.getenv("CLEAN_DATA_FILE_NAME")
-RESULTS_DIR = os.getenv("RESULTS_DIR")
-RESULTS_FILE_NAME = os.getenv("RESULTS_FILE_NAME")
+YELO_API_BASE_URL = os.getenv("YELO_API_BASE_URL", "default_api_base_url")
+CLEAN_DATA_DIR = os.getenv("CLEAN_DATA_DIR", "default_clean_data_dir")
+CLEAN_DATA_FILE_NAME = os.getenv("CLEAN_DATA_FILE_NAME", "default_clean_data.json")
+RESULTS_DIR = os.getenv("RESULTS_DIR", "default_results_dir")
+RESULTS_FILE_NAME = os.getenv("RESULTS_FILE_NAME", "default_results.json")
 
 # --- Configuration ---
 CURRENT_DIR = Path(".")
@@ -44,7 +44,7 @@ async def main():
     """
     all_users_data: list[CleanUserData] = []
     try:
-        all_users_data = load_users_from_json(JSON_PATH, CleanUserData)
+        all_users_data = load_users_from_json(JSON_PATH, CleanUserData)  # type: ignore
     except (FileNotFoundError, ValueError, ValidationError) as e:
         logger.error(f"Failed to prepare user data: {e}")
         logger.error("Aborting upload process.")
