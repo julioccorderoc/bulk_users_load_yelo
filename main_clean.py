@@ -16,15 +16,20 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from src.utils import logger
-from src.cleaning import split_name, format_phone, aggregate_user_data
+from src.cleaning import (
+    split_name,
+    format_phone,
+    aggregate_user_data,
+    is_valid_email_format,
+)
 
 
 # --- Environment Variables ---
 load_dotenv()
-RAW_DATA_FILE_NAME = os.getenv("RAW_DATA_FILE_NAME")
-RAW_DATA_DIR = os.getenv("RAW_DATA_DIR")
-CLEAN_DATA_DIR = os.getenv("CLEAN_DATA_DIR")
-CLEAN_DATA_FILE_NAME = os.getenv("CLEAN_DATA_FILE_NAME")
+RAW_DATA_DIR = os.getenv("RAW_DATA_DIR", "default_raw_data_dir")
+RAW_DATA_FILE_NAME = os.getenv("RAW_DATA_FILE_NAME", "default_raw_data")
+CLEAN_DATA_DIR = os.getenv("CLEAN_DATA_DIR", "default_clean_data_dir")
+CLEAN_DATA_FILE_NAME = os.getenv("CLEAN_DATA_FILE_NAME", "default_clean_data.json")
 
 
 # --- Constants ---
@@ -55,7 +60,7 @@ os.makedirs(CLEAN_DATA_DIR, exist_ok=True)
 # --- 1. RENAME ORIGINAL FILE
 # ---------------------------
 
-# This is done in the excel file
+# This is done in the excel file (if needed)
 # change the original names of the columns to the ones used in the code
 
 # ---------------------------
@@ -63,7 +68,7 @@ os.makedirs(CLEAN_DATA_DIR, exist_ok=True)
 # ---------------------------
 
 try:
-    df = pd.read_csv(FILE_DIR)
+    df = pd.read_csv(FILE_DIR, delimiter=";")
     logger.info(f"Shape: {df.shape}")
 except FileNotFoundError:
     logger.info(f"ERROR: Input file '{FILE_DIR}' not found. Exiting.")
@@ -73,18 +78,25 @@ except Exception as e:
     exit()
 
 initial_row_count = len(df)
-initial_unique_users = df["num_document"].nunique()
+initial_unique_users = df["NUM_IDENT"].nunique()
 
 # ---------------------------
 # --- 3. CLEAN --------------
 # ---------------------------
 
 # Remove unused columns
-columns_to_drop = ["num_interlocutor", "saldo_disponible", "fijo", "NSE"]
+columns_to_drop = [
+    "INTERLOCUTOR",
+    "SALDO_DISPONIBLE",
+    "fijo",
+    "NSE",
+    "CATEGORIA_CTA",
+    "CELULAR",
+]
 df.drop(columns=columns_to_drop, inplace=True, errors="ignore")
 
 # Remove NA values
-essential_columns = ["num_document", "apellidos_nombres"]
+essential_columns = ["CTA_CONTR", "NUM_IDENT", "NOMBRE"]
 df.dropna(subset=essential_columns, inplace=True)
 
 rows_dropped_for_errors = initial_row_count - len(df)
@@ -93,15 +105,15 @@ if rows_dropped_for_errors > 0:
         f"Removed {rows_dropped_for_errors} rows missing essential data in: {', '.join(essential_columns)}"
     )
 
-# Keep only unique "cuenta_contrato" values
+# Keep only unique "CTA_CONTR" values
 rows_before_cc_drop = len(df)
-df.drop_duplicates(subset=["cuenta_contrato"], keep="first", inplace=True)
+df.drop_duplicates(subset=["CTA_CONTR"], keep="first", inplace=True)
 rows_after_cc_drop = len(df)
 logger.info(
-    f"Removed {rows_before_cc_drop - rows_after_cc_drop} rows with duplicate 'cuenta_contrato'."
+    f"Removed {rows_before_cc_drop - rows_after_cc_drop} rows with duplicate 'CTA_CONTR'."
 )
 # Recalculate unique users *after* this filtering step, before grouping
-unique_users_after_cc_drop = df["num_document"].nunique()
+unique_users_after_cc_drop = df["NUM_IDENT"].nunique()
 
 
 # ---------------------------
@@ -110,38 +122,79 @@ unique_users_after_cc_drop = df["num_document"].nunique()
 
 # Adress Transformation
 # Fill NaN with empty strings before joining
-df["direccion"] = df["direccion"].fillna("")
-df["distrito"] = df["distrito"].fillna("")
+df["DIREC2"] = df["DIREC2"].fillna("")
+df["DISTRITO"] = df["DISTRITO"].fillna("")
 
 # Join address parts including ", Peru"
-df["full_address"] = df[["direccion", "distrito"]].agg(
+df["full_address"] = df[["DIREC2", "DISTRITO"]].agg(
     lambda x: ", ".join(filter(None, x)).strip(", "), axis=1
 )
 df["full_address"] = df["full_address"].apply(lambda x: f"{x}, Peru" if x else "Peru")
 
 # Drop original address columns
-df.drop(columns=["direccion", "distrito"], inplace=True)
+df.drop(columns=["DIREC2", "DISTRITO"], inplace=True)
 
 # Name Transformation
-df[["first_name", "last_name"]] = df["apellidos_nombres"].apply(
+df[["last_name", "first_name"]] = df["NOMBRE"].apply(
     lambda full_name: pd.Series(split_name(full_name))
 )
-df.drop(columns=["apellidos_nombres"], inplace=True)
+df.drop(columns=["NOMBRE"], inplace=True)
 
-# Phone Numbers transformation
-df["celular"] = df["celular"].apply(format_phone)
+# Email Validation and Cleaning
+logger.info("Validating and cleaning email addresses...")
+# Ensure CORREO column exists, fill NaNs with empty string for .str accessor, then None if needed
+if "CORREO" in df.columns:
+    df["CORREO"] = df["CORREO"].fillna("").astype(str)  # Ensure string type for apply
+    original_email_count = df[df["CORREO"] != ""].shape[0]  # Count non-empty strings
+
+    # Apply validation, set invalid or empty emails to None
+    df["CORREO"] = df["CORREO"].apply(
+        lambda x: x if x and is_valid_email_format(x) else None
+    )
+    valid_email_count = df["CORREO"].count()  # .count() excludes NaNs (None)
+    invalid_emails_set_to_none = original_email_count - valid_email_count
+    if invalid_emails_set_to_none > 0:
+        logger.info(
+            f"{invalid_emails_set_to_none} email addresses were invalid or empty and set to None."
+        )
+else:
+    logger.warning("Column 'CORREO' not found for email validation.")
+    df["CORREO"] = (
+        None  # Create the column as None if it doesn't exist to prevent key errors later
+    )
+
+
+# Phone Numbers transformation (now includes validation)
+logger.info("Formatting and validating phone numbers...")
+if "CELULAR_FINAL" in df.columns:
+    # Count non-NaN original phone numbers before transformation
+    original_phone_count = df["CELULAR_FINAL"].count()
+    df["CELULAR_FINAL"] = df["CELULAR_FINAL"].apply(
+        format_phone
+    )  # format_phone now validates
+
+    # Count valid, formatted phone numbers (non-NaN)
+    valid_phone_count = df["CELULAR_FINAL"].count()
+    phones_set_to_none = original_phone_count - valid_phone_count
+    if phones_set_to_none > 0:
+        logger.info(
+            f"{phones_set_to_none} phone numbers were invalid or could not be formatted and were set to None."
+        )
+else:
+    logger.warning("Column 'CELULAR_FINAL' not found for phone processing.")
+    df["CELULAR_FINAL"] = None  # Create column as None
 
 # Reorder columns
 intermediate_order = [
-    "num_document",
+    "NUM_IDENT",
     "first_name",
     "last_name",
-    "celular",
-    "correo",
-    "cuenta_contrato",
+    "CELULAR_FINAL",
+    "CORREO",
+    "CTA_CONTR",
     "full_address",
-    "latitud",
-    "longitud",
+    "CORD_Y",
+    "CORD_X",
 ]
 # Ensure all columns are included, even if not in the specific order list
 current_cols = [col for col in intermediate_order if col in df.columns]
@@ -153,7 +206,7 @@ logger.info("\nSample of data before grouping:\n\n")
 print(df.head(3))
 print("\n\n")
 
-# 7. Intermediate Checkpoint
+# Intermediate Checkpoint
 try:
     df.to_json(CHECKPOINT_FILE, orient="records", indent=4)
 except Exception as e:
@@ -164,11 +217,11 @@ except Exception as e:
 # --- 5. GROUP --------------
 # ---------------------------
 
-logger.info("Grouping data by 'num_document'...")
+logger.info("Grouping data by 'NUM_IDENT'...")
 
 # Apply grouping and aggregation
 grouped_data = (
-    df.groupby("num_document")
+    df.groupby("NUM_IDENT")
     .apply(aggregate_user_data, include_groups=False)
     .reset_index()
 )
@@ -193,6 +246,7 @@ for _, user in grouped_data.iterrows():
             "latitude": addr["latitude"],
             "longitude": addr["longitude"],
             "house_no": str(addr["house_no"]),
+            "postal_code": str(addr["postal_code"]),
             "loc_type": loc_type_value,
             "id": None,
             "upload_status": None,
@@ -200,7 +254,7 @@ for _, user in grouped_data.iterrows():
         clean_addresses.append(clean_address)
 
     user_data = {
-        "password": str(user["num_document"]),
+        "password": str(user["NUM_IDENT"]),
         "first_name": user["first_name"],
         "last_name": user["last_name"],
         "email": user["email"],
@@ -258,17 +312,17 @@ else:
 
 logger.info("--- Processing Summary ---")
 
-print(f"Initial unique users (num_document): {initial_unique_users}.")
-print(f"Unique users after 'cuenta_contrato' filter: {unique_users_after_cc_drop}.")
+print(f"Initial unique users (NUM_IDENT): {initial_unique_users}.")
+print(f"Unique users after 'CTA_CONTR' filter: {unique_users_after_cc_drop}.")
 print(f"Final unique users processed (after grouping): {unique_user_count}.")
 
 if unique_user_count < initial_unique_users:
     logger.warning(
-        f"-> Note: {initial_unique_users - unique_user_count} unique users were dropped, potentially due to 'cuenta_contrato' filtering removing all their records."
+        f"-> Note: {initial_unique_users - unique_user_count} unique users were dropped, potentially due to 'CTA_CONTR' filtering removing all their records."
     )
 elif unique_users_after_cc_drop < initial_unique_users:
     logger.warning(
-        "-> Note: Some users might have lost records due to 'cuenta_contrato' filtering, but all initial unique users are still present."
+        "-> Note: Some users might have lost records due to 'CTA_CONTR' filtering, but all initial unique users are still present."
     )
 else:
     logger.info("All initial unique users remain after processing.")

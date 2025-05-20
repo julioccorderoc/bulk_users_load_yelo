@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 
 
 load_dotenv()
-YELO_API_KEY = os.getenv("YELO_API_KEY")
+YELO_API_KEY = os.getenv("YELO_API_KEY", "default_api_key")
 
 
 class YeloResponses(BaseModel):
@@ -78,6 +78,7 @@ class CleanAddress(BaseModel):
     longitude: float
     house_no: str
     loc_type: int
+    postal_code: str
     id: int | None = None
     upload_status: str | None = None
     error_message: str | None = None
